@@ -73,7 +73,8 @@ nix.settings.experimental-features = [ "nix-command" "flakes" ];
 ### Linux with unprivileged user namespaces (bubblewrap requirement)
 
 Bubblewrap requires unprivileged user namespaces. **This sandboxing is Linux-only.**
-macOS is not supported.
+macOS is not supported. Windows users can run this via NixOS-WSL — see
+[WSL setup](#wsl-windows-subsystem-for-linux) below.
 
 On NixOS (default since 22.05):
 
@@ -116,6 +117,52 @@ consumption path you use:
 See the [`#ADJUST` table](#host-specific-knobs-adjust-markers) lower in this file for
 daemon socket paths, TLS cert bundle locations, `SBX_HOME`, and other knobs that differ
 between NixOS and generic Linux setups.
+
+---
+
+## WSL (Windows Subsystem for Linux)
+
+The sandboxes require a real Linux kernel. The easiest path on Windows is
+[NixOS-WSL](https://github.com/nix-community/NixOS-WSL), which gives you a
+full NixOS instance inside WSL2 with user namespaces already enabled.
+
+**One-time setup:**
+
+```powershell
+# 1. Download the latest NixOS-WSL release tarball from
+#    https://github.com/nix-community/NixOS-WSL/releases
+#    then import it:
+wsl --import NixOS $env:USERPROFILE\NixOS nixos-wsl.tar.gz
+wsl -d NixOS
+```
+
+Inside the NixOS-WSL shell, enable flakes and rebuild:
+
+```bash
+# /etc/nixos/configuration.nix  — add these two lines
+#   nix.settings.experimental-features = [ "nix-command" "flakes" ];
+#   nix.settings.trusted-users = [ "root" "@wheel" ];
+sudo nixos-rebuild switch
+
+# Verify
+nix --version   # should show 2.x with flakes
+```
+
+Then clone and develop as normal:
+
+```bash
+git clone https://github.com/stshow/coding-agent-wrappers
+cd coding-agent-wrappers
+nix develop
+```
+
+User namespaces are enabled by default in NixOS-WSL, so bubblewrap works
+out of the box. If you hit `bwrap: setting up uid map: Permission denied`,
+double-check that WSL2 (not WSL1) is active:
+
+```powershell
+wsl --set-version NixOS 2
+```
 
 ---
 
