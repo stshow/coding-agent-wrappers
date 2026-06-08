@@ -190,7 +190,7 @@
       # overlays.default — inject all four wrapped packages into a consumer's pkgs.
       #
       # In your flake:
-      #   inputs.agent-wrappers.url = "github:you/dotconfig?dir=documentation/coding-agent-wrappers";
+      #   inputs.agent-wrappers.url = "github:stshow/coding-agent-wrappers";
       #   nixpkgs.overlays = [ inputs.agent-wrappers.overlays.default ];
       #   # then in home.packages: pkgs.claude-wrapped, pkgs.codex-wrapped, ...
       # -------------------------------------------------------------------------

@@ -47,13 +47,85 @@ CLI updates.
 
 ---
 
+## Prerequisites
+
+### Nix with flakes enabled
+
+Flakes must be enabled in your Nix configuration:
+
+```nix
+# /etc/nix/nix.conf  or  ~/.config/nix/nix.conf
+experimental-features = nix-command flakes
+```
+
+Or pass the flag ad-hoc:
+
+```bash
+nix develop --extra-experimental-features "nix-command flakes"
+```
+
+On NixOS, the canonical way is:
+
+```nix
+nix.settings.experimental-features = [ "nix-command" "flakes" ];
+```
+
+### Linux with unprivileged user namespaces (bubblewrap requirement)
+
+Bubblewrap requires unprivileged user namespaces. **This sandboxing is Linux-only.**
+macOS is not supported.
+
+On NixOS (default since 22.05):
+
+```nix
+security.unprivilegedUsernsClone = true;  # enabled by default
+```
+
+On other Linux distributions, verify:
+
+```bash
+# Should print 1
+cat /proc/sys/kernel/unprivileged_userns_clone
+# or (newer kernels)
+sysctl user.max_user_namespaces   # should be > 0
+```
+
+If it's 0, enable it:
+
+```bash
+sudo sysctl -w kernel.unprivileged_userns_clone=1
+# Make permanent:
+echo 'kernel.unprivileged_userns_clone=1' | sudo tee /etc/sysctl.d/unprivileged-namespaces.conf
+```
+
+### `allowUnfree`
+
+The wrappers pull in unfree CLIs. Where `allowUnfree` needs to be set depends on which
+consumption path you use:
+
+| Path | `allowUnfree` required from you? |
+|---|---|
+| `nix develop` | **No** — already set inside this flake's `nixpkgs` import |
+| `packages.${system}.*` as a flake input | **No** — same reason |
+| `overlays.default` | **Yes** — builds against your `pkgs`, so your nixpkgs must allow it |
+| `homeManagerModules.default` | **Yes** — same |
+| Inline let-block (`home.nix`) | **Yes** — same |
+
+### Host-specific knobs
+
+See the [`#ADJUST` table](#host-specific-knobs-adjust-markers) lower in this file for
+daemon socket paths, TLS cert bundle locations, `SBX_HOME`, and other knobs that differ
+between NixOS and generic Linux setups.
+
+---
+
 ## Quick start — test-drive with `nix develop`
 
 The fastest way to try everything without modifying your system config:
 
 ```bash
-cd documentation/coding-agent-wrappers   # or wherever you cloned this
-nix develop                              # builds all four wrappers; drops into a shell
+# From the root of the cloned coding-agent-wrappers repository:
+nix develop
 ```
 
 Inside the shell every command is available:
@@ -75,18 +147,73 @@ claude          # sandboxed to ~/my-project
 
 ---
 
-## Three ways to consume in your own Nix build
+## Integrating into your own flake
 
-### Option 1 — Home Manager module (recommended for permanent installs)
+### Which option should I use?
 
-Add the flake as an input and import the module:
+> **Use the `packages` output (Option 1) unless you have a specific reason not to.**
+> The overlay and HM module are for when you want the wrappers built against *your*
+> nixpkgs rather than this flake's pin. The inline copy is for when you want no flake
+> input at all.
+
+### Option 1 — Reference the built packages directly (recommended)
+
+Add this flake as an input and reference `packages.${system}.default` wherever you put
+packages. This works with any Nix setup — no home-manager required, no overlay side
+effects, and `allowUnfree` is already baked in.
 
 ```nix
 # your flake.nix
-inputs.agent-wrappers.url =
-  "github:youruser/dotconfig?dir=documentation/coding-agent-wrappers";
+inputs.agent-wrappers.url = "github:stshow/coding-agent-wrappers";
+```
+
+Then reference the packages from the input:
+
+```nix
+# NixOS — system-wide
+environment.systemPackages = [ inputs.agent-wrappers.packages.${system}.default ];
+
+# home-manager — user profile
+home.packages = [ inputs.agent-wrappers.packages.${system}.default ];
+```
+
+Or install ad-hoc without touching your config:
+
+```bash
+nix profile install github:stshow/coding-agent-wrappers
+```
+
+Individual wrappers are also available:
+
+```nix
+inputs.agent-wrappers.packages.${system}.claude-wrapped
+inputs.agent-wrappers.packages.${system}.codex-wrapped
+inputs.agent-wrappers.packages.${system}.grok-wrapped
+inputs.agent-wrappers.packages.${system}.cursor-wrapped
+```
+
+**Pinning:** this path is fully hermetic — the CLIs are built against the nixpkgs pins
+recorded in this flake's `flake.lock`. To update to newer CLI versions:
+
+```bash
+nix flake update agent-wrappers
+```
+
+### Option 2 — Home Manager module
+
+Use this if you want home-manager to manage the packages declaratively as a module
+(e.g. you're already composing many HM modules and want this to be one of them). Note:
+your nixpkgs must have `allowUnfree = true` because this path builds against your
+`pkgs`.
+
+**Standalone home-manager** (`homeManagerConfiguration`):
+
+```nix
+# your flake.nix
+inputs.agent-wrappers.url = "github:stshow/coding-agent-wrappers";
 
 home-manager.lib.homeManagerConfiguration {
+  pkgs = nixpkgs.legacyPackages.${system};   # required
   modules = [
     inputs.agent-wrappers.homeManagerModules.default
     # your other modules …
@@ -94,51 +221,78 @@ home-manager.lib.homeManagerConfiguration {
 };
 ```
 
-The module adds the four wrapped packages to `home.packages` automatically.
-
-### Option 2 — Overlay
-
-If you prefer to control exactly which packages go into `home.packages`:
+**home-manager as a NixOS module** (the more common pattern):
 
 ```nix
-# your flake.nix
-nixpkgs.overlays = [ inputs.agent-wrappers.overlays.default ];
-
-# then in home.nix:
-home.packages = [
-  pkgs.claude-wrapped
-  pkgs.codex-wrapped
-  pkgs.grok-wrapped
-  pkgs.cursor-agent-wrapped
-];
-```
-
-### Option 3 — Copy the `let`-block inline
-
-If you want full control without a flake input, copy the wrapper machinery
-directly into your own `home.nix`. See [`home.nix`](home.nix) in this directory
-for the complete, copy-pasteable block. The key snippet:
-
-```nix
-{ config, pkgs, lib, inputs, ... }:
-let
-  pkgs-master = import inputs.nixpkgs-master {
-    inherit (pkgs.stdenv.hostPlatform) system;
-    config.allowUnfree = true;
-  };
-  claudeCode  = pkgs-master.claude-code;
-  codexCli    = pkgs-master.codex;
-  cursorCli   = pkgs.callPackage ./packages/cursor-cli { cursor-cli = pkgs-master.cursor-cli; };
-  grok-build-cli = pkgs.callPackage ./packages/grok-build-cli { };
-  # … wrapper definitions (see home.nix for the full let-block) …
-in
-{
-  home.packages = [ claudeWrapped codexWrapped grokWrapped cursorWrapped ];
+# inside your nixosConfigurations.*.modules:
+{ inputs, ... }: {
+  home-manager.users.<youruser>.imports = [
+    inputs.agent-wrappers.homeManagerModules.default
+  ];
 }
 ```
 
-You also need to copy `packages/cursor-cli/` and `packages/grok-build-cli/`
-alongside your `home.nix`, and the four `scripts/*-wrapped.sh` files.
+The module adds all four wrapped packages to `home.packages` automatically.
+
+### Option 3 — Overlay
+
+Use this if you want the wrappers injected into `pkgs` as named attributes so you can
+mix them with other `pkgs.*` references. Builds against **your** nixpkgs, so your
+nixpkgs must have `allowUnfree = true`.
+
+As a **NixOS or home-manager module option** (most common):
+
+```nix
+nixpkgs.overlays = [ inputs.agent-wrappers.overlays.default ];
+```
+
+Or when **manually instantiating nixpkgs** in your flake's `let` block:
+
+```nix
+pkgs = import nixpkgs {
+  inherit system;
+  config.allowUnfree = true;
+  overlays = [ inputs.agent-wrappers.overlays.default ];
+};
+```
+
+Then in your packages list:
+
+```nix
+home.packages = [         # or environment.systemPackages
+  pkgs.claude-wrapped
+  pkgs.codex-wrapped
+  pkgs.grok-wrapped
+  pkgs.cursor-agent-wrapped   # note: cursor uses cursor-agent-wrapped here
+];
+```
+
+**nixpkgs-master note:** the overlay still imports this flake's pinned `nixpkgs-master`
+for the CLI binaries (`claude-code`, `codex`, `cursor-cli`). Only the wrapper tooling
+(`bubblewrap`, `coreutils`, `callPackage`) comes from your nixpkgs.
+
+### Option 4 — Copy the `let`-block inline
+
+Use this if you want zero flake inputs and full local control. Copy the wrapper
+machinery into your own `home.nix`. See [`home.nix`](home.nix) in this repo for the
+complete, copy-pasteable block.
+
+> **⚠ Path layout is load-bearing.** `home.nix` uses `builtins.readFile ./scripts/*`
+> and `pkgs.callPackage ./packages/*`, resolved **relative to `home.nix`'s own
+> location**. You must copy `scripts/` and `packages/` at the same relative depth as
+> your `home.nix`, or the eval will fail with `path does not exist`.
+
+Files to copy alongside your `home.nix`:
+- `scripts/claude-wrapped.sh`
+- `scripts/codex-wrapped.sh`
+- `scripts/grok-wrapped.sh`
+- `scripts/cursor-wrapped.sh`
+- `packages/cursor-cli/default.nix`
+- `packages/grok-build-cli/default.nix`
+
+Your nixpkgs must have `allowUnfree = true`, and your flake must declare
+`inputs.nixpkgs-master.url = "github:NixOS/nixpkgs/master"` (referenced from
+`home.nix` as `inputs.nixpkgs-master`).
 
 ---
 
@@ -211,8 +365,8 @@ nix flake update nixpkgs-master
 ### Cursor CLI (pinned override)
 
 ```bash
-cd documentation/coding-agent-wrappers
-bash scripts/update-cursor-cli.sh
+# Run from the repository root
+./scripts/update-cursor-cli.sh
 # Rewrites packages/cursor-cli/default.nix with new version + hashes.
 # Commit the result and rebuild.
 ```
@@ -220,8 +374,8 @@ bash scripts/update-cursor-cli.sh
 ### Grok CLI (fully local)
 
 ```bash
-cd documentation/coding-agent-wrappers
-bash scripts/update-grok-build-cli.sh
+# Run from the repository root
+./scripts/update-grok-build-cli.sh
 # Rewrites packages/grok-build-cli/default.nix with new version + hashes.
 # Commit the result and rebuild.
 ```
@@ -232,7 +386,8 @@ bash scripts/update-grok-build-cli.sh
 
 The scripts are designed for a NixOS system with a GNOME keyring (`secret-tool`)
 and a modern kernel. Search each script for `#ADJUST` to find the lines most
-likely to need changing on your host.
+likely to need changing on your host. See also [Prerequisites](#prerequisites) for
+user-namespace setup and `allowUnfree` guidance.
 
 | Knob | Where | Default | Change if… |
 |---|---|---|---|
