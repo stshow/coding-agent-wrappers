@@ -73,8 +73,9 @@ nix.settings.experimental-features = [ "nix-command" "flakes" ];
 ### Linux with unprivileged user namespaces (bubblewrap requirement)
 
 Bubblewrap requires unprivileged user namespaces. **This sandboxing is Linux-only.**
-macOS is not supported. Windows users can run this via NixOS-WSL — see
-[WSL setup](#wsl-windows-subsystem-for-linux) below.
+macOS is not supported by these wrappers. Windows users can run this via NixOS-WSL — see
+[WSL setup](#wsl-windows-subsystem-for-linux) below. macOS users see
+[macOS isolation options](#macos-ai-agent-isolation-options) below.
 
 On NixOS (default since 22.05):
 
@@ -163,6 +164,62 @@ double-check that WSL2 (not WSL1) is active:
 ```powershell
 wsl --set-version NixOS 2
 ```
+
+---
+
+## macOS AI Agent Isolation Options
+
+> **Provisional.** I have not yet had a chance to fully review or validate the tools
+> listed here — treat this as a starting point, not a security endorsement. Native Nix
+> on macOS wrapper support may follow in a future release (no ETA).
+
+The bubblewrap sandboxes in this repo are Linux-only. If you're on macOS, the options
+below offer varying degrees of isolation for AI coding agents until a native Nix path
+exists.
+
+### Native / non-microVM: [`ai-jail`](https://github.com/akitaonrails/ai-jail)
+
+Use [`ai-jail`](https://github.com/akitaonrails/ai-jail) when you want a practical,
+lightweight wrapper around macOS sandboxing for AI coding agents.
+
+Recommended defensive posture:
+- Use a private `$HOME`.
+- Mask secrets and sensitive paths.
+- Do not expose the Docker socket.
+- Do not expose display/session sockets unless required.
+- Use lockdown mode for untrusted code review.
+
+`ai-jail` is useful as a multi-agent policy wrapper, but it is not a VM boundary. On
+macOS it relies on native sandboxing controls — treat it as containment hardening, not
+full isolation.
+
+### Local microVM: [Shuru](https://shuru.run/) / [GitHub](https://github.com/superhq-ai/shuru)
+
+Use [Shuru](https://shuru.run/) when you want stronger local isolation on Apple Silicon
+Macs.
+
+Shuru runs untrusted AI agents in ephemeral Linux microVMs, with host-side secret
+handling, opt-in networking, read-only mounts by default, and checkpointed reuse when
+state is needed. This is the stronger default choice when the agent may execute
+unfamiliar code and you want isolation closer to a dedicated machine boundary.
+
+### Docker-heavy / team workflows: [Docker AI Sandboxes](https://docs.docker.com/ai/sandboxes/)
+
+Use [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) when the workflow is
+already Docker-centered or needs team/admin governance.
+
+The key advantage is that the agent can build images, install packages, and run
+containers inside an isolated microVM without exposing the host Docker daemon. This may
+be the better operational choice for teams, CI-like workflows, or projects that already
+depend heavily on Docker.
+
+### Practical default
+
+| Situation | Recommendation |
+|---|---|
+| Casual local agent use | [`ai-jail`](https://github.com/akitaonrails/ai-jail) |
+| Untrusted code execution | [Shuru](https://shuru.run/) |
+| Docker-native / team-managed | [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) |
 
 ---
 
